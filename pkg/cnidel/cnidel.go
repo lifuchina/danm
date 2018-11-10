@@ -13,6 +13,7 @@ import (
   "github.com/containernetworking/cni/pkg/types"
   "github.com/containernetworking/cni/pkg/types/current"
   "github.com/nokia/danm/pkg/ipam"
+  "github.com/nokia/danm/pkg/danmep"
   danmtypes "github.com/nokia/danm/pkg/crd/apis/danm/v1"
   danmclientset "github.com/nokia/danm/pkg/crd/client/clientset/versioned"
   meta_v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,53 +23,9 @@ var (
   ipamType = "fakeipam"
   defaultDataDir = "/var/lib/cni/networks"
   flannelBridge = getEnv("FLANNEL_BRIDGE", "cbr0")
-)
-
-type cniBackendConfig struct {
-  danmtypes.CniBackend
-  readConfig cniConfigReader
-  ipamNeeded bool
-}
-
-type cniConfigReader func(netInfo *danmtypes.DanmNet, ipam danmtypes.IpamConfig) ([]byte, error)
-
-// sriovNet represent the configuration of sriov plugin
-type sriovNet struct {
-  // the name of the network
-  Name   string     `json:"name"`
-  // currently constant "sriov"
-  Type   string     `json:"type"`
-  // name of the PF
-  PfName string     `json:"if0"`
-  // interface name in the Container
-  IfName string     `json:"if0name,omitEmpty"`
-  // if true then add VF as L2 mode only, IPAM will not be executed
-  L2Mode bool       `json:"l2enable,omitEmpty"`
-  // VLAN ID to assign for the VF
-  Vlan   int        `json:"vlan,omitEmpty"`
-  // IPAM configuration to be used for this network.
-  Ipam   danmtypes.IpamConfig `json:"ipam,omitEmpty"`
-  // DPDK configuration
-  Dpdk   DpdkOption `json:"dpdk,omitEmpty"`
-}
-
-// DpdkOption represents the DPDK options for the sriov plugin
-type DpdkOption struct {
-  // The name of kernel NIC driver
-  NicDriver  string `json:"kernel_driver"`
-  // The name of DPDK capable driver
-  DpdkDriver string `json:"dpdk_driver"`
-  // Path to the dpdk-devbind.py script
-  DpdkTool   string `json:"dpdk_tool"`
-}
-
-var (
   dpdkNicDriver = os.Getenv("DPDK_NIC_DRIVER")
   dpdkDriver = os.Getenv("DPDK_DRIVER")
   dpdkTool = os.Getenv("DPDK_TOOL")
-)
-
-var (
   supportedNativeCnis = []*cniBackendConfig {
     &cniBackendConfig {
       danmtypes.CniBackend {
@@ -76,6 +33,14 @@ var (
         CniVersion: "0.3.1",
       },
       cniConfigReader(getSriovCniConfig),
+      true,
+    },
+    &cniBackendConfig {
+      danmtypes.CniBackend {
+        BackendName: "macvlan",
+        CniVersion: "0.3.1",
+      },
+      cniConfigReader(getMacvlanCniConfig),
       true,
     },
   }
@@ -95,7 +60,7 @@ func IsDelegationRequired(danmClient danmclientset.Interface, nid, namespace str
   return true, netInfo, nil
 }
 
-// DelegateInterfaceSetup delegates Ks8 Pod network interface setup task to the input 3rd party CNI plugin
+// DelegateInterfaceSetup delegates K8s Pod network interface setup task to the input 3rd party CNI plugin
 // Returns the CNI compatible result object, or an error if interface creation was unsuccessful, or if the 3rd party CNI config could not be loaded
 func DelegateInterfaceSetup(danmClient danmclientset.Interface, netInfo *danmtypes.DanmNet, iface danmtypes.Interface) (types.Result,error) {
   var (
@@ -163,6 +128,21 @@ func getCniIpamConfig(options danmtypes.DanmNetOption, ip4 string, ip6 string) d
   }
 }
 
+func parseRoutes(rawRoutes map[string]string, netCidr string) ([]danmtypes.IpamRoute, string) {
+  defaultGw := ""
+  routes := []danmtypes.IpamRoute{}
+  for dst, gw := range rawRoutes {
+    routes = append(routes, danmtypes.IpamRoute{
+      Dst: dst,
+      Gw: gw,
+    })
+    if _, sn, _ := net.ParseCIDR(dst); sn.String() == netCidr {
+      defaultGw = gw
+    }
+  }
+  return routes, defaultGw
+}
+
 func getCniPluginConfig(netInfo *danmtypes.DanmNet, ipamOptions danmtypes.IpamConfig) ([]byte, error) {
   cniType := netInfo.Spec.NetworkType
   for _, cni := range supportedNativeCnis {
@@ -197,7 +177,23 @@ func getSriovCniConfig(netInfo *danmtypes.DanmNet, ipamOptions danmtypes.IpamCon
   }
   rawConfig, err := json.Marshal(sriovConfig)
   if err != nil {
-    return nil, errors.New("Error getting sriov plugin config: " + err.Error())
+    return nil, errors.New("Error putting together CNI config for SR-IOV plugin: " + err.Error())
+  }
+  return rawConfig, nil
+}
+
+func getMacvlanCniConfig(netInfo *danmtypes.DanmNet, ipamOptions danmtypes.IpamConfig) ([]byte, error) {
+  hDev := danmep.DetermineHostDeviceName(netInfo)
+  macvlanConfig := macvlanNet {
+    Master: hDev,
+   //TODO: make these params configurable if required
+    Mode:   "bridge",
+    MTU:    1500,
+    Ipam:   ipamOptions,
+  }
+  rawConfig, err := json.Marshal(macvlanConfig)
+  if err != nil {
+    return nil, errors.New("Error putting together CNI config for MACVLAN plugin: " + err.Error())
   }
   return rawConfig, nil
 }
@@ -210,21 +206,6 @@ func readCniConfigFile(netInfo *danmtypes.DanmNet) ([]byte, error) {
     return nil, errors.New("Could not load CNI config file for plugin:" + cniType)
   }
   return rawConfig, nil
-}
-
-func parseRoutes(rawRoutes map[string]string, netCidr string) ([]danmtypes.IpamRoute, string) {
-  defaultGw := ""
-  routes := []danmtypes.IpamRoute{}
-  for dst, gw := range rawRoutes {
-    routes = append(routes, danmtypes.IpamRoute{
-      Dst: dst,
-      Gw: gw,
-    })
-    if _, sn, _ := net.ParseCIDR(dst); sn.String() == netCidr {
-      defaultGw = gw
-    }
-  }
-  return routes, defaultGw
 }
 
 // DelegateInterfaceDelete delegates Ks8 Pod network interface delete task to the input 3rd party CNI plugin
