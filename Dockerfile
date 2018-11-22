@@ -32,7 +32,7 @@ RUN cd /go/src/github.com/nokia/danm/pkg \
  && client-gen -v5 --alsologtostderr --clientset-name versioned --input-base "" --input github.com/nokia/danm/pkg/crd/apis/danm/v1 --clientset-path github.com/nokia/danm/pkg/crd/client/clientset \
  && lister-gen -v5 --alsologtostderr --input-dirs github.com/nokia/danm/pkg/crd/apis/danm/v1 --output-package github.com/nokia/danm/pkg/crd/client/listers \
  && informer-gen -v5 --alsologtostderr --input-dirs github.com/nokia/danm/pkg/crd/apis/danm/v1 --versioned-clientset-package github.com/nokia/danm/pkg/crd/client/clientset/versioned --listers-package github.com/nokia/danm/pkg/crd/client/listers --output-package github.com/nokia/danm/pkg/crd/client/informers \ 
- && go install -a -ldflags '-extldflags "-static"' github.com/nokia/danm/pkg/danm
- && go install -a -ldflags '-extldflags "-static"' github.com/nokia/danm/pkg/netwatcher
- && go install -a -ldflags '-extldflags "-static"' github.com/nokia/danm/pkg/fakeipam
+ && go install -a -ldflags '-extldflags "-static"' github.com/nokia/danm/pkg/danm \
+ && go install -a -ldflags '-extldflags "-static"' github.com/nokia/danm/pkg/netwatcher \
+ && go install -a -ldflags '-extldflags "-static"' github.com/nokia/danm/pkg/fakeipam \
  && go install -a -ldflags '-extldflags "-static"' github.com/nokia/danm/pkg/svcwatcher
