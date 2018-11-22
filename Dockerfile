@@ -4,8 +4,6 @@ MAINTAINER Levente Kale <levente.kale@nokia.com>
 ENV GOPATH /go
 ENV PATH $GOPATH/bin:/usr/local/go/bin:$PATH
 
-COPY build.sh /build.sh
-
 RUN apk add --no-cache ca-certificates \
  && apk update --no-cache \
  && apk upgrade --no-cache \
